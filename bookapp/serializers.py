@@ -31,7 +31,7 @@ class UserLoginSerializer(serializers.Serializer):
        
         # Use the custom authentication backend
         user = authenticate(email=email, password=password)
-        # print(f'Authenticating user: {email}')
+        # print(f'Authenticating user: {email}') 
        
         if not user:
             print('Invalid credentials')
