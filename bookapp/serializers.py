@@ -29,7 +29,7 @@ class UserLoginSerializer(serializers.Serializer):
         email = data.get('email')
         password = data.get('password')
        
-        # Use the custom authentication backend
+        # Use the custom authentication backend.
         user = authenticate(email=email, password=password)
         # print(f'Authenticating user: {email}')
        
