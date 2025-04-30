@@ -21,6 +21,7 @@ from django.views.decorators.cache import cache_page
 from django.core.cache import cache
 
 
+from .task import *
 
 
 
@@ -35,7 +36,7 @@ class UserRegistrationView(APIView):
             if user.is_active:
                     return custom200( "Email is already verified. Please log in.")
 
-            send_otp_email(email=email)
+            send_otp_email_task.delay(email=email)
 
             return custom200("OTP resent. Please verify your email.")
 
@@ -44,7 +45,7 @@ class UserRegistrationView(APIView):
                 serializer = UserRegistrationSerializer(data=request.data)
                 if serializer.is_valid():
                     user = serializer.save(is_active = False)
-                    send_otp_email(email=email)
+                    send_otp_email_task.delay(email=email)
 
                     return custom200("OTP sent successfully. Please verify your email.")
                 return custom404("Not Found",serializer.errors)
@@ -107,7 +108,6 @@ class UserLoginView(generics.GenericAPIView):
         return custom200("Successfully Login",{
             'access': str(refresh.access_token),
             'refresh': str(refresh),
-            # 'user': UserLoginSerializer(user).data
         })
     
     
@@ -125,44 +125,51 @@ class BookUserListView(APIView):
 
 
 
-
 # class BookListCreateView(APIView):
-#     permission_classes = [permissions.IsAuthenticated]  # Only logged-in users can access
+#     permission_classes = [permissions.IsAuthenticated]
 
-#     # GET all books
 #     def get(self, request):
 #         user = request.user
-#         books = Book.objects.filter(bookuser=user)
-#         serializer = BookSerializer(books, many=True)
-#         return custom200("Successfully lists",serializer.data)
+#         cache_key = f"user_books_{user.id}"
 
-#     # POST create a new book
+#         # Check cache first
+#         data = cache.get(cache_key)
+        
+#         if data is None:
+#             books = Book.objects.filter(bookuser=user)
+#             serializer = BookSerializer(books, many=True)
+#             data = serializer.data
+#             print("data listed from database")
+#             cache.set(cache_key, data, timeout=300)  # 5 minutes
+#         print("data listed from cache")
+#         return custom200("Successfully lists", data)
+
 #     def post(self, request):
 #         user = request.user
 #         serializer = BookSerializer(data=request.data)
 #         if serializer.is_valid():
 #             serializer.save(bookuser=user)
-#             return custom200("Successfully Created",serializer.data)
-#         return custom404("Not Found",serializer.errors)
+
+#             # Invalidate the user's cache so new GET shows updated list
+#             cache_key = f"user_books_{user.id}"
+#             cache.delete(cache_key)
+
+#             return custom200("Successfully Created", serializer.data)
+#         return custom404("Not Found", serializer.errors)
+
 
 class BookListCreateView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
+    def get_cache_key(self, user_id, book_id=None):
+        return f"user_books_{user_id}"
+
+    @redis_cache(timeout=300)
     def get(self, request):
         user = request.user
-        cache_key = f"user_books_{user.id}"
-
-        # Check cache first
-        data = cache.get(cache_key)
-        
-        if data is None:
-            books = Book.objects.filter(bookuser=user)
-            serializer = BookSerializer(books, many=True)
-            data = serializer.data
-            print("data listed from database")
-            cache.set(cache_key, data, timeout=300)  # 5 minutes
-        print("data listed from cache")
-        return custom200("Successfully lists", data)
+        books = Book.objects.filter(bookuser=user)
+        serializer = BookSerializer(books, many=True)
+        return custom200("Successfully lists", serializer.data)
 
     def post(self, request):
         user = request.user
@@ -170,35 +177,98 @@ class BookListCreateView(APIView):
         if serializer.is_valid():
             serializer.save(bookuser=user)
 
-            # Invalidate the user's cache so new GET shows updated list
-            cache_key = f"user_books_{user.id}"
+            # Invalidate user's book list cache
+            cache_key = self.get_cache_key(user.id)
             cache.delete(cache_key)
 
             return custom200("Successfully Created", serializer.data)
         return custom404("Not Found", serializer.errors)
 
 
+# class BookDetailView(APIView):
+#     permission_classes = [permissions.IsAuthenticated]
+
+#     def get_cache_key(self, user_id, book_id):
+#         return f"book_{user_id}_{book_id}"
+
+#     def get(self, request, pk):
+#         user = request.user
+#         cache_key = self.get_cache_key(user.id, pk)
+
+#         # Try to get from cache
+#         data = cache.get(cache_key)
+#         if data is None:
+#             book = get_object_or_404(Book, pk=pk, bookuser=user)
+#             serializer = BookSerializer(book)
+#             data = serializer.data
+#             print("data listed from database")
+#             cache.set(cache_key, data, timeout=300)  # 5 minutes
+#         print("data listed from cache")
+#         return custom200("Successfully list", data)
+
+#     def put(self, request, pk):
+#         user = request.user
+#         book = get_object_or_404(Book, pk=pk, bookuser=user)
+#         serializer = BookSerializer(book, data=request.data)
+#         if serializer.is_valid():
+#             serializer.save()
+#             data = serializer.data
+
+#             # Update book cache
+#             cache_key = self.get_cache_key(user.id, pk)
+#             cache.set(cache_key, data, timeout=300)
+
+#             # Invalidate list cache
+#             cache.delete(f"user_books_{user.id}")
+#             return custom200("Successfully Updated", data)
+#         return custom404("Not Found", serializer.errors)
+
+#     def patch(self, request, pk):
+#         user = request.user
+#         book = get_object_or_404(Book, pk=pk, bookuser=user)
+#         serializer = BookSerializer(book, data=request.data, partial=True)
+#         if serializer.is_valid():
+#             serializer.save()
+#             data = serializer.data
+
+#             # Update book cache
+#             cache_key = self.get_cache_key(user.id, pk)
+#             cache.set(cache_key, data, timeout=300)
+
+#             # Invalidate list cache
+#             cache.delete(f"user_books_{user.id}")
+#             return custom200("Successfully Updated", data)
+#         return custom404("Not Found", serializer.errors)
+
+#     def delete(self, request, pk):
+#         user = request.user
+#         book = get_object_or_404(Book, pk=pk, bookuser=user)
+#         book.delete()
+
+#         # Remove this book from cache
+#         cache_key = self.get_cache_key(user.id, pk)
+#         cache.delete(cache_key)
+
+#         # Invalidate the book list cache too
+#         cache.delete(f"user_books_{user.id}")
+#         return custom200("Successfully Deleted")
+
+
 
 class BookDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    def get_cache_key(self, user_id, book_id):
-        return f"book_{user_id}_{book_id}"
+    def get_cache_key(self, user_id, book_id=None):
+        if book_id:
+            return f"book_{user_id}_{book_id}"
+        return f"user_books_{user_id}"
 
+    @redis_cache(timeout=300)
     def get(self, request, pk):
         user = request.user
-        cache_key = self.get_cache_key(user.id, pk)
-
-        # Try to get from cache
-        data = cache.get(cache_key)
-        if data is None:
-            book = get_object_or_404(Book, pk=pk, bookuser=user)
-            serializer = BookSerializer(book)
-            data = serializer.data
-            print("data listed from database")
-            cache.set(cache_key, data, timeout=300)  # 5 minutes
-        print("data listed from cache")
-        return custom200("Successfully list", data)
+        book = get_object_or_404(Book, pk=pk, bookuser=user)
+        serializer = BookSerializer(book)
+        return custom200("Successfully list", serializer.data)
 
     def put(self, request, pk):
         user = request.user
@@ -213,7 +283,7 @@ class BookDetailView(APIView):
             cache.set(cache_key, data, timeout=300)
 
             # Invalidate list cache
-            cache.delete(f"user_books_{user.id}")
+            cache.delete(self.get_cache_key(user.id))
             return custom200("Successfully Updated", data)
         return custom404("Not Found", serializer.errors)
 
@@ -230,7 +300,7 @@ class BookDetailView(APIView):
             cache.set(cache_key, data, timeout=300)
 
             # Invalidate list cache
-            cache.delete(f"user_books_{user.id}")
+            cache.delete(self.get_cache_key(user.id))
             return custom200("Successfully Updated", data)
         return custom404("Not Found", serializer.errors)
 
@@ -239,10 +309,7 @@ class BookDetailView(APIView):
         book = get_object_or_404(Book, pk=pk, bookuser=user)
         book.delete()
 
-        # Remove this book from cache
-        cache_key = self.get_cache_key(user.id, pk)
-        cache.delete(cache_key)
-
-        # Invalidate the book list cache too
-        cache.delete(f"user_books_{user.id}")
+        # Invalidate caches
+        cache.delete(self.get_cache_key(user.id, pk))
+        cache.delete(self.get_cache_key(user.id))
         return custom200("Successfully Deleted")
