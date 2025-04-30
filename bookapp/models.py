@@ -9,9 +9,7 @@ class Bookuser(AbstractUser):
   
     username = None
     email = models.EmailField(unique=True,null=True,blank=True)
-    is_email_verified = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=timezone.now)
-    otp=models.IntegerField(null=True,blank=True)
 
     USERNAME_FIELD = 'email'
  

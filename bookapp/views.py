@@ -14,6 +14,13 @@ from .utils import *
 
 from django.shortcuts import get_object_or_404
 
+from .mixins import *
+
+from django.utils.decorators import method_decorator
+from django.views.decorators.cache import cache_page
+from django.core.cache import cache
+
+
 
 
 
@@ -25,12 +32,12 @@ class UserRegistrationView(APIView):
         try:
             user = Bookuser.objects.get(email=email)
 
-            if user.is_email_verified:
-                    return Response({"message": "Email is already verified. Please log in."}, status=status.HTTP_200_OK)
+            if user.is_active:
+                    return custom200( "Email is already verified. Please log in.")
 
             send_otp_email(email=email)
 
-            return Response({"message": "OTP resent. Please verify your email."}, status=status.HTTP_200_OK)
+            return custom200("OTP resent. Please verify your email.")
 
         except Bookuser.DoesNotExist:
                 # New user — register and send OTP
@@ -39,8 +46,8 @@ class UserRegistrationView(APIView):
                     user = serializer.save(is_active = False)
                     send_otp_email(email=email)
 
-                    return Response({"message": "OTP sent successfully. Please verify your email."}, status=status.HTTP_201_CREATED)
-                return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+                    return custom200("OTP sent successfully. Please verify your email.")
+                return custom404("Not Found",serializer.errors)
 
 
 
@@ -53,7 +60,7 @@ class OTPVerificationView(APIView):
             otp = str(serializer.validated_data['otp'])
 
             try:
-                user = Bookuser.objects.get(email=email, is_email_verified=False)
+                user = Bookuser.objects.get(email=email, is_active=False)
 
                 # Get OTP from Redis
                 cached_otp = cache.get(f"otp_{email}")
@@ -62,21 +69,20 @@ class OTPVerificationView(APIView):
                     if str(cached_otp) == otp:
                         # Success: Activate user
                         user.is_active = True
-                        user.is_email_verified = True
                         user.otp = None  # Clear OTP from DB
                         user.save()
 
                         cache.delete(f"otp_{email}")  # Remove from Redis
-                        return Response({"message": "Email verified successfully. Account activated."}, status=status.HTTP_200_OK)
+                        return custom200("Email verified successfully. Account activated.")
                     else:
-                        return Response({"error": "Invalid OTP."}, status=status.HTTP_400_BAD_REQUEST)
+                        return custom404("Invalid OTP.")
                 else:
-                    return Response({"error": "OTP has expired. Please request a new one."}, status=status.HTTP_400_BAD_REQUEST)
+                    return custom404( "OTP has expired. Please request a new one.")
 
             except Bookuser.DoesNotExist:
-                return Response({"error": "No user found with this email or already activated."}, status=status.HTTP_404_NOT_FOUND)
+                return custom404("No user found with this email or already activated.")
 
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        return custom404("Not Found",serializer.errors)
 
 
 
@@ -98,11 +104,11 @@ class UserLoginView(generics.GenericAPIView):
             raise serializers.ValidationError('User account is not active')
  
         refresh = RefreshToken.for_user(user)
-        return Response({
+        return custom200("Successfully Login",{
             'access': str(refresh.access_token),
             'refresh': str(refresh),
             # 'user': UserLoginSerializer(user).data
-        }, status=status.HTTP_200_OK)
+        })
     
     
 
@@ -115,65 +121,128 @@ class BookUserListView(APIView):
     def get(self, request):
         bookusers = Bookuser.objects.all()
         serializer = BookuserSerializer(bookusers, many=True)
-        return Response(serializer.data)
+        return custom200("Successfully lists",serializer.data)
 
 
 
+
+# class BookListCreateView(APIView):
+#     permission_classes = [permissions.IsAuthenticated]  # Only logged-in users can access
+
+#     # GET all books
+#     def get(self, request):
+#         user = request.user
+#         books = Book.objects.filter(bookuser=user)
+#         serializer = BookSerializer(books, many=True)
+#         return custom200("Successfully lists",serializer.data)
+
+#     # POST create a new book
+#     def post(self, request):
+#         user = request.user
+#         serializer = BookSerializer(data=request.data)
+#         if serializer.is_valid():
+#             serializer.save(bookuser=user)
+#             return custom200("Successfully Created",serializer.data)
+#         return custom404("Not Found",serializer.errors)
 
 class BookListCreateView(APIView):
-    permission_classes = [permissions.IsAuthenticated]  # Only logged-in users can access
+    permission_classes = [permissions.IsAuthenticated]
 
-    # GET all books
     def get(self, request):
         user = request.user
-        books = Book.objects.filter(bookuser=user)
-        serializer = BookSerializer(books, many=True)
-        return Response(serializer.data)
+        cache_key = f"user_books_{user.id}"
 
-    # POST create a new book
+        # Check cache first
+        data = cache.get(cache_key)
+        
+        if data is None:
+            books = Book.objects.filter(bookuser=user)
+            serializer = BookSerializer(books, many=True)
+            data = serializer.data
+            print("data listed from database")
+            cache.set(cache_key, data, timeout=300)  # 5 minutes
+        print("data listed from cache")
+        return custom200("Successfully lists", data)
+
     def post(self, request):
         user = request.user
         serializer = BookSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save(bookuser=user)
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+            # Invalidate the user's cache so new GET shows updated list
+            cache_key = f"user_books_{user.id}"
+            cache.delete(cache_key)
+
+            return custom200("Successfully Created", serializer.data)
+        return custom404("Not Found", serializer.errors)
 
 
 
 class BookDetailView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
-    # GET book by ID
+    def get_cache_key(self, user_id, book_id):
+        return f"book_{user_id}_{book_id}"
+
     def get(self, request, pk):
         user = request.user
-        book = get_object_or_404(Book, pk=pk,bookuser=user)
-        serializer = BookSerializer(book)
-        return Response(serializer.data)
+        cache_key = self.get_cache_key(user.id, pk)
 
-    # PUT update the entire book record
+        # Try to get from cache
+        data = cache.get(cache_key)
+        if data is None:
+            book = get_object_or_404(Book, pk=pk, bookuser=user)
+            serializer = BookSerializer(book)
+            data = serializer.data
+            print("data listed from database")
+            cache.set(cache_key, data, timeout=300)  # 5 minutes
+        print("data listed from cache")
+        return custom200("Successfully list", data)
+
     def put(self, request, pk):
         user = request.user
-        book = get_object_or_404(Book, pk=pk,bookuser=user)
+        book = get_object_or_404(Book, pk=pk, bookuser=user)
         serializer = BookSerializer(book, data=request.data)
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            data = serializer.data
 
-    # PATCH update part of the book record
+            # Update book cache
+            cache_key = self.get_cache_key(user.id, pk)
+            cache.set(cache_key, data, timeout=300)
+
+            # Invalidate list cache
+            cache.delete(f"user_books_{user.id}")
+            return custom200("Successfully Updated", data)
+        return custom404("Not Found", serializer.errors)
+
     def patch(self, request, pk):
         user = request.user
-        book = get_object_or_404(Book, pk=pk,bookuser=user)
+        book = get_object_or_404(Book, pk=pk, bookuser=user)
         serializer = BookSerializer(book, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+            data = serializer.data
 
-    # DELETE book by ID
+            # Update book cache
+            cache_key = self.get_cache_key(user.id, pk)
+            cache.set(cache_key, data, timeout=300)
+
+            # Invalidate list cache
+            cache.delete(f"user_books_{user.id}")
+            return custom200("Successfully Updated", data)
+        return custom404("Not Found", serializer.errors)
+
     def delete(self, request, pk):
         user = request.user
-        book = get_object_or_404(Book, pk=pk,bookuser=user)
+        book = get_object_or_404(Book, pk=pk, bookuser=user)
         book.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+
+        # Remove this book from cache
+        cache_key = self.get_cache_key(user.id, pk)
+        cache.delete(cache_key)
+
+        # Invalidate the book list cache too
+        cache.delete(f"user_books_{user.id}")
+        return custom200("Successfully Deleted")
