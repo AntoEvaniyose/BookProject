@@ -135,7 +135,7 @@ class BookListPDFGenerator:
 
 def generate_qr_code_from_data(data_dict):
     # Raw format as string (using pipe "|" as separator)
-    data_string = f"Book Id:{data_dict['id']}|Book Name:{data_dict['name']}|Book price:{data_dict['price']}"
+    # data_string = f"Book Id:{data_dict['id']}|Book Name:{data_dict['name']}|Book price:{data_dict['price']}"
 
     # Format data in clean column style
     data_string = (
