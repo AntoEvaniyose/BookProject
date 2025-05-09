@@ -21,8 +21,14 @@ from django.views.decorators.cache import cache_page
 from django.core.cache import cache
 
 
-from .task import *
+from .tasks import *
 
+from django.views import View
+from django.http import HttpResponse
+from .utils import BookPDFGenerator
+
+from django.http import JsonResponse, HttpResponse
+from .utils import generate_qr_code_from_data
 
 
 class UserRegistrationView(APIView):
@@ -313,3 +319,56 @@ class BookDetailView(APIView):
         cache.delete(self.get_cache_key(user.id, pk))
         cache.delete(self.get_cache_key(user.id))
         return custom200("Successfully Deleted")
+    
+
+
+class BookPDFView(View):
+    def get(self, request, book_id):
+        try:
+            book = Book.objects.get(id=book_id)
+        except Book.DoesNotExist:
+            return HttpResponse("Book not found", status=404)
+
+        pdf_generator = BookPDFGenerator(book)
+        pdf_buffer = pdf_generator.generate_pdf()
+
+        response = HttpResponse(pdf_buffer, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="book_{book_id}.pdf"'
+        return response
+    
+    
+class BookListPDFView(APIView):
+    def get(self, request):
+        user = request.user  # Get the logged-in user
+
+        # Query books for the logged-in user
+        books = Book.objects.filter(bookuser=user)
+
+        if not books.exists():
+            return HttpResponse("No books found for this user.", status=404)
+
+        # Generate PDF using the utility class
+        pdf_generator = BookListPDFGenerator(user, books)
+        pdf_file = pdf_generator.generate_pdf()
+
+        # Prepare response with PDF file
+        response = HttpResponse(pdf_file, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="book_list_{user.id}.pdf"'
+        return response
+    
+
+
+class GenerateQRCodeWithDataView(View):
+    def get(self, request, book_id):
+        book = get_object_or_404(Book, id=book_id)
+        data = {
+            "id": book.id,
+            "name": book.name,
+            "price": book.price,
+            # "image": request.build_absolute_uri(book.image.url) if book.image else None
+        }
+        # scan_url = request.build_absolute_uri(f"/scan/{book_id}/")
+        qr_image = generate_qr_code_from_data(data)
+        return HttpResponse(qr_image, content_type="image/png")
+
+

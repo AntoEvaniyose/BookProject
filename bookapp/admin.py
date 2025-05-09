@@ -3,3 +3,4 @@ from . models import *
 
 admin.site.register(Bookuser)
 admin.site.register(Book)
+admin.site.register(Subscription)

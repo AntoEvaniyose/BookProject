@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'bookapp',
     'rest_framework',
+    'django_celery_beat',
 ]
 
 AUTH_USER_MODEL = 'bookapp.Bookuser'
@@ -124,7 +125,17 @@ CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = 'Asia/Kolkata'
+CELERY_ENABLE_UTC = False
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
+
+
+
+# CELERY_BEAT_SCHEDULE = {
+#     'send_otp_email_task_beat': {
+#         'task': 'bookapp.task.send_otp_email_task_beat',
+#         'schedule': 3600.0,  # Every hour in seconds
+#     },
+# }
 
 
 # Password validation
